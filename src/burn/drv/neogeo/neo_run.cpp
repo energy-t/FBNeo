@@ -240,6 +240,12 @@ INT32 nNeoScreenWidth;
 
 UINT8 nLEDLatch, nLED[3];
 
+#define TEST_FRAME_BOUNDARY
+#define ADJUST_FRAME_BOUNDARY
+
+#ifdef TEST_FRAME_BOUNDARY
+static unsigned int currentFrame, currentVideoFrame;
+#endif
 // ----------------------------------------------------------------------------
 
 static bool bMemoryCardInserted, bMemoryCardWritable;
@@ -341,6 +347,20 @@ static INT32 nNeoCDMode = 0;
 static INT32 nff0002 = 0;
 static INT32 nff0004 = 0;
 
+
+static inline INT32 NeoCurrentScanline()
+{
+#ifdef ADJUST_FRAME_BOUNDARY
+	return (SekCurrentScanline() + 248) % 264;
+#else
+	return SekCurrentScanline();
+#endif
+}
+
+static inline INT32 NeoCurrentScanlineOffset()
+{
+	return SekTotalCycles() - SekCurrentScanline() * nSekCyclesScanline;
+}
 
 bool IsNeoGeoCD() {
 	//return (nNeoSystemType & NEO_SYS_CD);
@@ -1811,7 +1831,7 @@ static inline void NeoIRQUpdate(UINT16 wordValue)
 {
 	nIRQAcknowledge |= (wordValue & 7);
 
-//	bprintf(PRINT_NORMAL, _T("  - IRQ Ack -> %02X (at line %3i).\n"), nIRQAcknowledge, SekCurrentScanline());
+//	bprintf(PRINT_NORMAL, _T("  - IRQ Ack -> %02X (at line %3i).\n"), nIRQAcknowledge, NeoCurrentScanline());
 
 	if ((nIRQAcknowledge & 7) == 7) {
 		SekSetIRQLine(7, CPU_IRQSTATUS_NONE);
@@ -1832,7 +1852,7 @@ static inline void NeoCDIRQUpdate(UINT8 byteValue)
 {
 	nIRQAcknowledge |= (byteValue & 0x38);
 
-//	bprintf(PRINT_NORMAL, _T("  - IRQ Ack -> %02X (CD, at line %3i).\n"), nIRQAcknowledge, SekCurrentScanline());
+//	bprintf(PRINT_NORMAL, _T("  - IRQ Ack -> %02X (CD, at line %3i).\n"), nIRQAcknowledge, NeoCurrentScanline());
 
 	if ((nIRQAcknowledge & 0x3F) == 0x3F) {
 		SekSetIRQLine(7, CPU_IRQSTATUS_NONE);
@@ -1888,6 +1908,13 @@ static UINT8 ReadInput1(INT32 nOffset)
 	switch (nOffset) {
 		case 0x00:
 //			bprintf(PRINT_NORMAL, _T(" -- bank %d inputP0[0x%02X] read (%i).\n"), 0, nInputSelect, SekTotalCycles());
+#ifdef TEST_FRAME_BOUNDARY
+			bprintf(PRINT_ERROR, _T("RDINP: %u frame, %u vframe, %i line, %i offset\n"),
+			currentFrame,
+			currentVideoFrame,
+			NeoCurrentScanline(),
+			NeoCurrentScanlineOffset());
+#endif
 			return ~NeoInputBank[nJoyport0[nInputSelect & 0x07]];
 
 		case 0x01:
@@ -2114,7 +2141,7 @@ static void WriteIO2(INT32 nOffset, UINT8 byteValue)
 			if (nNeoSystemType & NEO_SYS_CART) {
 				NeoRecalcPalette = 1;
 				bNeoDarkenPalette = (nOffset == 0x11) ? 1 : 0;
-				//bprintf(PRINT_NORMAL, _T("  - Darken Palette %X (0x%02X, at scanline %i).\n"), bNeoDarkenPalette, byteValue, SekCurrentScanline());
+				//bprintf(PRINT_NORMAL, _T("  - Darken Palette %X (0x%02X, at scanline %i).\n"), bNeoDarkenPalette, byteValue, NeoCurrentScanline());
 			}
 			break;
 
@@ -2203,7 +2230,7 @@ static void __fastcall neogeoWriteByte(UINT32 sekAddress, UINT8 byteValue)
 	switch (sekAddress & 0xFF0000) {
 		case 0x300000:
 			if ((sekAddress & 1) == 1) {
-//				bprintf(PRINT_NORMAL, "  - Watchdog timer reset (%02X, at scanline %i)\n", byteValue, SekCurrentScanline());
+//				bprintf(PRINT_NORMAL, "  - Watchdog timer reset (%02X, at scanline %i)\n", byteValue, NeoCurrentScanline());
 
 #if defined EMULATE_WATCHDOG
 				nNeoWatchdog = -SekTotalCycles();
@@ -2257,13 +2284,13 @@ static UINT16 __fastcall neogeoReadWordVideo(UINT32 sekAddress)
 			return (UINT16)(nNeoGraphicsModulo >> 1);
 
 		case 0x06:										// Display status
-//			bprintf(PRINT_NORMAL, "  - Display status read, line: %3i, anim: %i\n", SekCurrentScanline(), nNeoSpriteFrame);
+//			bprintf(PRINT_NORMAL, "  - Display status read, line: %3i, anim: %i\n", NeoCurrentScanline(), nNeoSpriteFrame);
 
 #if 1 && !defined USE_SPEEDHACKS
 			bForcePartialRender |= bForceUpdateOnStatusRead;
 #endif
 
-			return ((SekCurrentScanline() + nScanlineOffset) << 7) | 0 | (nNeoSpriteFrame & 7);
+			return ((NeoCurrentScanline() + nScanlineOffset) << 7) | 0 | (nNeoSpriteFrame & 7);
 	}
 
 	return 0;
@@ -2322,7 +2349,7 @@ static void __fastcall neogeoWriteWordVideo(UINT32 sekAddress, UINT16 wordValue)
 			if ((nIRQControl & 0x10) == 0 && wordValue & 0x10) {
 
 #if 0 || defined LOG_IRQ
-				bprintf(PRINT_NORMAL, _T("  - IRQ enabled  (at line %3i, IRQControl: 0x%02X).\n"), SekCurrentScanline(), wordValue & 0xFF);
+				bprintf(PRINT_NORMAL, _T("  - IRQ enabled  (at line %3i, IRQControl: 0x%02X).\n"), NeoCurrentScanline(), wordValue & 0xFF);
 #endif
 
 				if (nIRQCycles < nCyclesSegment) {
@@ -2332,13 +2359,13 @@ static void __fastcall neogeoWriteWordVideo(UINT32 sekAddress, UINT16 wordValue)
 
 #if 0 || defined LOG_IRQ
 			if (nIRQControl & 0x10 && (wordValue & 0x10) == 0) {
-				bprintf(PRINT_NORMAL, _T("  - IRQ disabled (at line %3i, IRQControl: 0x%02X).\n"), SekCurrentScanline(), wordValue & 0xFF);
+				bprintf(PRINT_NORMAL, _T("  - IRQ disabled (at line %3i, IRQControl: 0x%02X).\n"), NeoCurrentScanline(), wordValue & 0xFF);
 			}
 #endif
 
 			nIRQControl = wordValue;
 //			bprintf(PRINT_NORMAL, _T("  - Autoanim speed -> 0x%02X\n"), wordValue >> 8);
-//			bprintf(PRINT_NORMAL, _T("  - IRQ control register -> 0x%02X (at line %3i)\n"), wordValue & 0xFF, SekCurrentScanline());
+//			bprintf(PRINT_NORMAL, _T("  - IRQ control register -> 0x%02X (at line %3i)\n"), wordValue & 0xFF, NeoCurrentScanline());
 			break;
 		}
 
@@ -2353,7 +2380,7 @@ static void __fastcall neogeoWriteWordVideo(UINT32 sekAddress, UINT16 wordValue)
 			nIRQOffset = (nIRQOffset & 0xFFFF0000) | wordValue;
 
 #if 0 || defined LOG_IRQ
-			bprintf(PRINT_NORMAL, _T("  - IRQ offs -> 0x%08X (at line %3i, IRQControl: 0x%02X).\n"), nIRQOffset, SekCurrentScanline(), nIRQControl);
+			bprintf(PRINT_NORMAL, _T("  - IRQ offs -> 0x%08X (at line %3i, IRQControl: 0x%02X).\n"), nIRQOffset, NeoCurrentScanline(), nIRQControl);
 #endif
 
 			if (nIRQControl & 0x20) {
@@ -2366,7 +2393,7 @@ static void __fastcall neogeoWriteWordVideo(UINT32 sekAddress, UINT16 wordValue)
 				nIRQCycles = SekTotalCycles() + NeoConvertIRQPosition(nIRQOffset + 8);
 
 #if 0 || defined LOG_IRQ
-				bprintf(PRINT_NORMAL, _T("    IRQ Line -> %3i (at line %3i, relative).\n"), nIRQCycles / nSekCyclesScanline, SekCurrentScanline());
+				bprintf(PRINT_NORMAL, _T("    IRQ Line -> %3i (at line %3i, relative).\n"), nIRQCycles / nSekCyclesScanline, NeoCurrentScanline());
 #endif
 
 				if (nIRQCycles < 0) {
@@ -4811,7 +4838,14 @@ INT32 NeoFrame()
 	nuPD4990ATicks = nCyclesExtra[0];
 
 	// Run 68000
+#ifndef ADJUST_FRAME_BOUNDARY
 	nCyclesSegment = nSekCyclesScanline * 24;
+#else
+	/* Do scanlines: [248, 263] followed by [0, 23] ==
+	 *               [248, 264) followed by [0, 24)
+	 */
+	nCyclesSegment = nSekCyclesScanline * (16 + 24);
+#endif
 	while (SekTotalCycles() < nCyclesSegment) {
 
 		if ((nIRQControl & 0x10) && (nIRQCycles < NO_IRQ_PENDING) && (SekTotalCycles() >= nIRQCycles)) {
@@ -4820,14 +4854,14 @@ INT32 NeoFrame()
 			SekSetIRQLine(nScanlineIRQ, CPU_IRQSTATUS_ACK);
 
 #if 0 || defined LOG_IRQ
-			bprintf(PRINT_NORMAL, _T("  - IRQ triggered (line %3i + %3i cycles).\n"), SekCurrentScanline(), SekTotalCycles() - SekCurrentScanline() * nSekCyclesScanline);
+			bprintf(PRINT_NORMAL, _T("  - IRQ triggered (line %3i + %3i cycles).\n"), NeoCurrentScanline(), NeoCurrentScanlineOffset());
 #endif
 
 			if (nIRQControl & 0x80) {
 				nIRQCycles += NeoConvertIRQPosition(nIRQOffset + 1);
 
 #if 0 || defined LOG_IRQ
-				bprintf(PRINT_NORMAL, _T("  - IRQ Line -> %3i (at line %3i, autoload).\n"), nIRQCycles / nSekCyclesScanline, SekCurrentScanline());
+				bprintf(PRINT_NORMAL, _T("  - IRQ Line -> %3i (at line %3i, autoload).\n"), nIRQCycles / nSekCyclesScanline, NeoCurrentScanline());
 #endif
 
 			}
@@ -4859,7 +4893,11 @@ INT32 NeoFrame()
 
 	// Display starts here
 
+#ifndef ADJUST_FRAME_BOUNDARY
 	nCyclesVBlank = nSekCyclesScanline * 248;
+#else
+	nCyclesVBlank = nCyclesTotal[0]; //nSekCyclesScanline * 248;
+#endif
 	if (bRenderLineByLine) {
 		INT32 nLastIRQ = nIRQCycles - 1;
 		while (SekTotalCycles() < nCyclesVBlank) {
@@ -4869,13 +4907,13 @@ INT32 NeoFrame()
 				nIRQAcknowledge &= ~2;
 				SekSetIRQLine(nScanlineIRQ, CPU_IRQSTATUS_ACK);
 #if 0 || defined LOG_IRQ
-				bprintf(PRINT_NORMAL, _T("  - IRQ triggered (line %3i + %3i cycles).\n"), SekCurrentScanline(), SekTotalCycles() - SekCurrentScanline() * nSekCyclesScanline);
+				bprintf(PRINT_NORMAL, _T("  - IRQ triggered (line %3i + %3i cycles).\n"), NeoCurrentScanline(), NeoCurrentScanlineOffset());
 #endif
 
 				if (nIRQControl & 0x80) {
 					nIRQCycles += NeoConvertIRQPosition(nIRQOffset + 1);
 #if 0 || defined LOG_IRQ
-					bprintf(PRINT_NORMAL, _T("  - IRQ Line -> %3i (at line %3i, autoload).\n"), nIRQCycles / nSekCyclesScanline, SekCurrentScanline());
+					bprintf(PRINT_NORMAL, _T("  - IRQ Line -> %3i (at line %3i, autoload).\n"), nIRQCycles / nSekCyclesScanline, NeoCurrentScanline());
 #endif
 
 				}
@@ -4883,12 +4921,12 @@ INT32 NeoFrame()
 				bForcePartialRender = bRenderImage;
 				if (bForcePartialRender) {
 					nSliceStart = nSliceEnd;
-					nSliceEnd = SekCurrentScanline() - 5 + NEO_RASTER_IRQ_TWEAK;
+					nSliceEnd = NeoCurrentScanline() - 5 + NEO_RASTER_IRQ_TWEAK;
 				}
 			} else {
 				if (bForcePartialRender) {
 					nSliceStart = nSliceEnd;
-					nSliceEnd = SekCurrentScanline() - 6 + NEO_RASTER_IRQ_TWEAK;
+					nSliceEnd = NeoCurrentScanline() - 6 + NEO_RASTER_IRQ_TWEAK;
 				}
 			}
 
@@ -4928,14 +4966,14 @@ INT32 NeoFrame()
 				SekSetIRQLine(nScanlineIRQ, CPU_IRQSTATUS_ACK);
 
 #if 0 || defined LOG_IRQ
-				bprintf(PRINT_NORMAL, _T("  - IRQ triggered (line %3i + %3i cycles).\n"), SekCurrentScanline(), SekTotalCycles() - SekCurrentScanline() * nSekCyclesScanline);
+				bprintf(PRINT_NORMAL, _T("  - IRQ triggered (line %3i + %3i cycles).\n"), NeoCurrentScanline(), NeoCurrentScanlineOffset());
 #endif
 
 				if (nIRQControl & 0x80) {
 					nIRQCycles += NeoConvertIRQPosition(nIRQOffset + 1);
 
 #if 0 || defined LOG_IRQ
-					bprintf(PRINT_NORMAL, _T("  - IRQ Line -> %3i (at line %3i, autoload).\n"), nIRQCycles / nSekCyclesScanline, SekCurrentScanline());
+					bprintf(PRINT_NORMAL, _T("  - IRQ Line -> %3i (at line %3i, autoload).\n"), nIRQCycles / nSekCyclesScanline, NeoCurrentScanline());
 #endif
 
 				}
@@ -4949,7 +4987,7 @@ INT32 NeoFrame()
 				if (bForcePartialRender) {
 
 					nSliceStart = nSliceEnd;
-					nSliceEnd = SekCurrentScanline() - 5 + NEO_RASTER_IRQ_TWEAK;
+					nSliceEnd = NeoCurrentScanline() - 5 + NEO_RASTER_IRQ_TWEAK;
 
 					if (nSliceEnd > 240) {
 						nSliceEnd = 240;
@@ -5000,6 +5038,9 @@ INT32 NeoFrame()
 #endif
 		nIRQAcknowledge &= ~4;
 		SekSetIRQLine(nVBLankIRQ, CPU_IRQSTATUS_ACK);
+#ifdef TEST_FRAME_BOUNDARY
+		currentVideoFrame++;
+#endif
 	}
 
 	// set IRQ scanline at line 248
@@ -5009,11 +5050,12 @@ INT32 NeoFrame()
 		}
 
 #if 0 || defined LOG_IRQ
-		bprintf(PRINT_NORMAL, _T("  - IRQ Line -> %3i (at line %3i, VBlank).\n"), nIRQCycles / nSekCyclesScanline, SekCurrentScanline());
+		bprintf(PRINT_NORMAL, _T("  - IRQ Line -> %3i (at line %3i, VBlank).\n"), nIRQCycles / nSekCyclesScanline, NeoCurrentScanline());
 #endif
 
 	}
 
+#ifndef ADJUST_FRAME_BOUNDARY
 	nCyclesSegment = nCyclesTotal[0];
 	while (SekTotalCycles() < nCyclesSegment) {
 
@@ -5041,6 +5083,7 @@ INT32 NeoFrame()
 			NeoSekRun(nIRQCycles - SekTotalCycles());
 		}
 	}
+#endif
 
 	if (nIRQCycles < NO_IRQ_PENDING) {
 		nIRQCycles -= nCyclesTotal[0];
@@ -5115,5 +5158,8 @@ INT32 NeoFrame()
 			CDEmuGetSoundBuffer(pBurnSoundOut, nBurnSoundLen);
 	}
 
+#ifdef TEST_FRAME_BOUNDARY
+	currentFrame++;
+#endif
 	return 0;
 }
