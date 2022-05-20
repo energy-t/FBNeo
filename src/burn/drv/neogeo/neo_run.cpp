@@ -286,6 +286,12 @@ static bool bRenderLineByLine;
 static bool bForcePartialRender;
 static bool bForceUpdateOnStatusRead;
 
+/* Temporary variable that will be removed once all issues are ironed out from
+ * shifting emulated frame slice boundary to end on vblank.  Setting to false
+ * completely restores old driver behavior
+ */
+static bool bShiftFrameBoundary;
+
 static INT32 nNeoControlConfig;
 
 static INT32 nNeoSystemType;
@@ -344,7 +350,10 @@ static INT32 nff0004 = 0;
 
 static inline INT32 NeoCurrentScanline()
 {
-	return (SekCurrentScanline() + 248) % 264;
+	if (bShiftFrameBoundary)
+		return (SekCurrentScanline() + 248) % 264;
+	else
+		return SekCurrentScanline();
 }
 
 static inline INT32 NeoCurrentScanlineOffset()
@@ -4084,6 +4093,8 @@ static INT32 NeoInitCommon()
 	nScanlineOffset = 0xF8;									// correct as verified on MVS hardware
 #endif
 
+	bShiftFrameBoundary = true;
+
 	NEO_RASTER_IRQ_TWEAK = 0;
 
 	// These games rely on reading the line counter for synchronising raster effects
@@ -4111,6 +4122,10 @@ static INT32 NeoInitCommon()
 	//if (!strcmp(BurnDrvGetTextA(DRV_NAME), "neocdz")) {
 	//	bRenderLineByLine = true;
 	//}
+
+	if (!strcmp(BurnDrvGetTextA(DRV_NAME), "blazstar")) {
+		bShiftFrameBoundary = false;
+	}
 
 	nNeoControlConfig = BurnDrvGetHardwareCode() & HARDWARE_SNK_CONTROLMASK;
 
@@ -4808,6 +4823,15 @@ INT32 NeoFrame()
 	bRenderImage = false;
 	bForceUpdateOnStatusRead = false;
 
+if (!bShiftFrameBoundary)
+{
+	if (pBurnDraw) {
+		NeoUpdatePalette();											// Update the palette
+		NeoClearScreen();
+	}
+	nSliceEnd = 0x10;
+}
+
 	SekNewFrame();
 	ZetNewFrame();
 
@@ -4821,11 +4845,17 @@ INT32 NeoFrame()
 	nuPD4990ATicks = nCyclesExtra[0];
 
 	// Run 68000
-	//nCyclesSegment = nSekCyclesScanline * 24;
+if (!bShiftFrameBoundary)
+{
+	nCyclesSegment = nSekCyclesScanline * 24;
+}
+else
+{
 	/* Do scanlines: [248, 263] followed by [0, 23] ==
 	 *               [248, 264) followed by [0, 24)
 	 */
 	nCyclesSegment = nSekCyclesScanline * (16 + 24);
+}
 	while (SekTotalCycles() < nCyclesSegment) {
 
 		if ((nIRQControl & 0x10) && (nIRQCycles < NO_IRQ_PENDING) && (SekTotalCycles() >= nIRQCycles)) {
@@ -4872,13 +4902,23 @@ INT32 NeoFrame()
 	bForcePartialRender = false;
 
 	// Display starts here
+if (bShiftFrameBoundary)
+{
 	if (pBurnDraw) {
 		NeoUpdatePalette();											// Update the palette
 		NeoClearScreen();
 	}
 	nSliceEnd = 0x10;
+}
 
-	nCyclesVBlank = nCyclesTotal[0]; //nSekCyclesScanline * 248;
+if (!bShiftFrameBoundary)
+{
+	nCyclesVBlank = nSekCyclesScanline * 248;
+}
+else
+{
+	nCyclesVBlank = nCyclesTotal[0];
+}
 	if (bRenderLineByLine) {
 		INT32 nLastIRQ = nIRQCycles - 1;
 		while (SekTotalCycles() < nCyclesVBlank) {
@@ -5032,6 +5072,37 @@ INT32 NeoFrame()
 #endif
 
 	}
+
+if (!bShiftFrameBoundary)
+{
+	nCyclesSegment = nCyclesTotal[0];
+	while (SekTotalCycles() < nCyclesSegment) {
+
+		if ((nIRQControl & 0x10) && (nIRQCycles < NO_IRQ_PENDING) && (SekTotalCycles() >= nIRQCycles)) {
+			nIRQAcknowledge &= ~2;
+			SekSetIRQLine(nScanlineIRQ, CPU_IRQSTATUS_ACK);
+
+#if 0 || defined LOG_IRQ
+			bprintf(PRINT_NORMAL, _T("  - IRQ triggered (line %3i + %3i cycles).\n"), SekCurrentScanline(), SekTotalCycles() - SekCurrentScanline() * nSekCyclesScanline);
+#endif
+
+			if (nIRQControl & 0x80) {
+				nIRQCycles += NeoConvertIRQPosition(nIRQOffset + 1);
+
+#if 0 || defined LOG_IRQ
+				bprintf(PRINT_NORMAL, _T("  - IRQ Line -> %3i (at line %3i, autoload).\n"), nIRQCycles / nSekCyclesScanline, SekCurrentScanline());
+#endif
+
+			}
+		}
+
+		if (nCyclesSegment < nIRQCycles || SekTotalCycles() >= nIRQCycles) {
+			NeoSekRun(nCyclesSegment - SekTotalCycles());
+		} else {
+			NeoSekRun(nIRQCycles - SekTotalCycles());
+		}
+	}
+}
 
 	if (nIRQCycles < NO_IRQ_PENDING) {
 		nIRQCycles -= nCyclesTotal[0];
